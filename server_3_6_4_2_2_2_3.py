@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import hashlib
@@ -14,6 +15,7 @@ app = FastAPI(title="Veri Terminali Pro - Nihai Canli Veri Motoru")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -82,6 +84,7 @@ MARKET_CACHE = {}
 META_ENRICHED_AT = {}
 CACHE_LOCK = threading.Lock()
 DATA_LOCK = threading.Lock()
+THREADS_STARTED = False
 
 
 def _cache_key(symbol: str, market: str = "") -> str:
@@ -96,7 +99,6 @@ def set_market_item(key: str, value: dict):
     ck = _cache_key(sym, mkt)
     with CACHE_LOCK:
         MARKET_CACHE[ck] = value
-        # Geriye dönük doğrudan sembol aramaları için de sakla (aynı sembolde çakışma olursa öncelik koru)
         if sym not in MARKET_CACHE or MARKET_CACHE[sym].get("market") == mkt:
             MARKET_CACHE[sym] = value
 
@@ -287,8 +289,17 @@ def sync_bist_and_global():
                         pass
             except Exception:
                 pass
-            time.sleep(0.6)
-        time.sleep(4)
+            time.sleep(0.8)
+        time.sleep(5)
+
+
+@app.get("/")
+def root_health():
+    return {
+        "status": "ok",
+        "service": "Veri Terminali Pro",
+        "active_symbols": len(get_market_snapshot())
+    }
 
 
 @app.get("/api/search")
@@ -650,7 +661,7 @@ def update_live_news_and_spk():
         for source_name, url in rss_sources:
             try:
                 feed = fetch_rss_with_headers(url)
-                for idx, entry in enumerate(feed.entries[:12]):
+                for entry in feed.entries[:12]:
                     title = entry.get("title", "").strip()
                     if not title or title in seen_titles:
                         continue
@@ -761,9 +772,25 @@ def get_spk_kap():
         return list(SPK_KAP_CACHE)
 
 
-if __name__ == "__main__":
+def start_background_workers():
+    global THREADS_STARTED
+    with DATA_LOCK:
+        if THREADS_STARTED:
+            return
+        THREADS_STARTED = True
     threading.Thread(target=sync_all_crypto_coingecko, daemon=True).start()
     threading.Thread(target=sync_bist_and_global, daemon=True).start()
     threading.Thread(target=update_live_news_and_spk, daemon=True).start()
-    print("Veri Terminali Pro Sunucusu Baslatildi -> http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
+@app.on_event("startup")
+def on_startup():
+    start_background_workers()
+
+
+start_background_workers()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    print(f"Veri Terminali Pro Sunucusu Baslatildi -> http://0.0.0.0:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
